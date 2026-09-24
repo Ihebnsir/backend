@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+
+var app = require('../app');
+var connectDB = require('../config/db');
+var debug = require('debug')('backend:server');
+var http = require('http');
+
+var port = normalizePort(process.env.PORT || '5000');
+app.set('port', port);
+
+connectDB()
+  .then(function() {
+    // Le serveur HTTP démarre uniquement après la connexion MongoDB.
+    var server = http.createServer(app);
+    server.listen(port);
+    server.on('error', onError);
+    server.on('listening', function() {
+      onListening(server);
+    });
+  })
+  .catch(function(error) {
+    console.error('Connexion MongoDB impossible:', error.message);
+    process.exit(1);
+  });
+
+function normalizePort(value) {
+  var parsedPort = parseInt(value, 10);
+
+  if (isNaN(parsedPort)) return value;
+  if (parsedPort >= 0) return parsedPort;
+  return false;
+}
+
+function onError(error) {
+  if (error.syscall !== 'listen') throw error;
+
+  var bind = typeof port === 'string' ? 'Pipe ' + port : 'Port ' + port;
+
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+function onListening(server) {
+  var address = server.address();
+  var bind = typeof address === 'string' ? 'pipe ' + address : 'port ' + address.port;
+  debug('Listening on ' + bind);
+}
