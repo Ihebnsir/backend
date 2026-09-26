@@ -1,9 +1,18 @@
 var mongoose = require('mongoose');
 
 function connectDB() {
-  var mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/seculens';
+  var mongoUri = process.env.MONGO_URI;
 
-  return mongoose.connect(mongoUri);
+  if (!mongoUri || !mongoUri.trim()) {
+    console.error('MONGO_URI manquant dans .env');
+    process.exit(1);
+  }
+
+  return mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 })
+    .then(function(connection) {
+      console.log('MongoDB connected');
+      return connection;
+    });
 }
 
 module.exports = connectDB;
