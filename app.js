@@ -4,6 +4,7 @@ var express = require('express');
 var cors = require('cors');
 var mongoose = require('mongoose');
 var scansRouter = require('./routes/scans');
+var authRouter = require('./routes/auth');
 
 var app = express();
 
@@ -20,6 +21,7 @@ app.get('/api/health', function(req, res) {
   });
 });
 
+app.use('/api/auth', authRouter);
 app.use('/api/scans', scansRouter);
 
 // Les erreurs inconnues restent toujours des réponses JSON sans stack trace.

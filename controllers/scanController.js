@@ -27,6 +27,7 @@ async function createScan(req, res, next) {
 
     var findings = mockFindings.map(function(finding) { return Object.assign({}, finding); });
     var scan = await Scan.create({
+      user: req.user._id,
       target: target,
       status: 200,
       findings: findings,
@@ -40,7 +41,7 @@ async function createScan(req, res, next) {
 
 async function listScans(req, res, next) {
   try {
-    var scans = await Scan.find().sort({ createdAt: -1 }).select('target score createdAt findings');
+    var scans = await Scan.find({ user: req.user._id }).sort({ createdAt: -1 }).select('target score createdAt findings');
     res.json(scans.map(function(scan) {
       return {
         id: scan._id,
@@ -59,7 +60,7 @@ async function getScan(req, res, next) {
   if (!isValidId(req.params.id)) return res.status(400).json({ error: 'Identifiant invalide' });
 
   try {
-    var scan = await Scan.findById(req.params.id);
+    var scan = await Scan.findOne({ _id: req.params.id, user: req.user._id });
     if (!scan) return res.status(404).json({ error: 'Scan introuvable' });
     res.json(scan);
   } catch (error) {
@@ -75,7 +76,7 @@ async function updateFinding(req, res, next) {
 
   try {
     var scan = await Scan.findOneAndUpdate(
-      { _id: req.params.id, 'findings._id': req.params.findingId },
+      { _id: req.params.id, user: req.user._id, 'findings._id': req.params.findingId },
       { $set: { 'findings.$.fixed': req.body.fixed } },
       { new: true, runValidators: true }
     );
@@ -93,7 +94,7 @@ async function deleteScan(req, res, next) {
   if (!isValidId(req.params.id)) return res.status(400).json({ error: 'Identifiant invalide' });
 
   try {
-    var scan = await Scan.findByIdAndDelete(req.params.id);
+    var scan = await Scan.findOneAndDelete({ _id: req.params.id, user: req.user._id });
     if (!scan) return res.status(404).json({ error: 'Scan introuvable' });
     res.status(204).send();
   } catch (error) {

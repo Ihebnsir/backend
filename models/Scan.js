@@ -13,6 +13,7 @@ var findingSchema = new mongoose.Schema({
 }, { _id: true });
 
 var scanSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   target: { type: String, required: true, match: /^https?:\/\// },
   status: { type: Number, required: true },
   score: { type: Number, required: true, min: 0, max: 100 },
