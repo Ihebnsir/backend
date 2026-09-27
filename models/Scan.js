@@ -26,6 +26,8 @@ var scanSchema = new mongoose.Schema({
   target: { type: String, required: true, match: /^https?:\/\// },
   status: { type: Number, required: true },
   score: { type: Number, required: true, min: 0, max: 100 },
+  // Version des règles ayant produit ce scan (absente sur les scans antérieurs à son ajout).
+  scannerVersion: { type: String },
   findings: { type: [findingSchema], default: [] }
 }, { timestamps: true });
 

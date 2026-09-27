@@ -65,7 +65,8 @@ async function createScan(req, res, next) {
       target: target,
       status: scanResult.status,
       findings: scanResult.findings,
-      score: calculateScore(scanResult.findings)
+      score: calculateScore(scanResult.findings),
+      scannerVersion: scanEngine.SCANNER_VERSION
     });
     res.status(201).json(scan);
 
@@ -98,14 +99,15 @@ async function getAiStatus(req, res, next) {
 
 async function listScans(req, res, next) {
   try {
-    var scans = await Scan.find({ user: req.user._id }).sort({ createdAt: -1 }).select('target score createdAt findings');
+    var scans = await Scan.find({ user: req.user._id }).sort({ createdAt: -1 }).select('target score createdAt findings scannerVersion');
     res.json(scans.map(function(scan) {
       return {
         id: scan._id,
         target: scan.target,
         score: scan.score,
         createdAt: scan.createdAt,
-        findingsCount: scan.findings.length
+        findingsCount: scan.findings.length,
+        scannerVersion: scan.scannerVersion || null
       };
     }));
   } catch (error) {

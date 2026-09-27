@@ -75,7 +75,8 @@ async function fetchHeaders(url, signal) {
     headers: responseHeadersToObject(response.headers),
     cookies: getRawCookies(response.headers),
     body: '',
-    bodyTruncated: false
+    bodyTruncated: false,
+    bodyReadError: false
   };
 
   if (response.body) {
@@ -114,12 +115,21 @@ async function fetchHeaders(url, signal) {
         }
       }
 
-      result.body = Buffer.concat(chunks.map(function(chunk) { return Buffer.from(chunk); })).toString('utf8');
     } catch (error) {
+      // Coupure pendant le téléchargement : on le signale au lieu de l'ignorer silencieusement.
+      // L'URL de la cible n'est pas un secret, contrairement aux cookies qu'on ne logge jamais.
+      var reason = error && error.name === 'AbortError'
+        ? 'délai dépassé'
+        : (error && error.cause && error.cause.code) || (error && error.message) || 'erreur inconnue';
+      console.error('Téléchargement HTML interrompu pour ' + url + ' après ' + bytesRead + ' octets (' + reason + ') : analyse sur le HTML partiel.');
+      result.bodyReadError = true;
       await reader.cancel().catch(function() {});
     } finally {
       reader.releaseLock();
     }
+
+    // Le HTML déjà reçu est conservé (même partiel) : les règles HTML l'analysent au lieu d'une page vide.
+    result.body = Buffer.concat(chunks.map(function(chunk) { return Buffer.from(chunk); })).toString('utf8');
   }
 
   return result;
@@ -189,4 +199,4 @@ async function probe(target) {
   }
 }
 
-module.exports = { probe: probe };
+module.exports = { probe: probe, maximumHtmlBytes: maximumHtmlBytes };
