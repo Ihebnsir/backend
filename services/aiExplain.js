@@ -7,7 +7,8 @@ var GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/'
 var PRIMARY_MODEL = 'gemini-3.8-flash';
 // Modèle de secours : la surcharge (503) touche un modèle précis, un autre modèle peut encore répondre.
 // Il a aussi son propre quota, ce qui aide en cas de 429 sur le modèle principal.
-var FALLBACK_MODEL = 'gemini-3.5-flash';
+// gemini-3.5-flash a été écarté : 503 à tous les essais ; la version "lite", plus légère, répondait.
+var FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 var requestTimeoutMs = 20000;
 var delayBetweenCallsMs = 300;
 // Ordre des tentatives : modèle principal → (2 s, seulement après un 503) → modèle principal
