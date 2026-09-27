@@ -2,12 +2,18 @@
 // L'IA n'ajoute ni ne modifie jamais de finding ; en cas de problème, elle renvoie des champs à null.
 
 // gemini-2.5-flash n'est plus ouvert aux nouvelles clés (HTTP 404) : Google recommande gemini-3.8-flash.
-// Version fixée volontairement (plutôt que l'alias "latest") pour garder des réponses stables.
-var GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent';
+// Versions fixées volontairement (plutôt que l'alias "latest") pour garder des réponses stables.
+var GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
+var PRIMARY_MODEL = 'gemini-3.8-flash';
+// Modèle de secours : la surcharge (503) touche un modèle précis, un autre modèle peut encore répondre.
+// Il a aussi son propre quota, ce qui aide en cas de 429 sur le modèle principal.
+var FALLBACK_MODEL = 'gemini-3.5-flash';
 var requestTimeoutMs = 20000;
 var delayBetweenCallsMs = 300;
-// Gemini répond souvent 503 ("modèle surchargé") de façon passagère : une seule nouvelle tentative, après 2 s.
+// Ordre des tentatives : modèle principal → (2 s, seulement après un 503) → modèle principal
+// → (5 s) → modèle de secours. Soit 3 appels au maximum par lot, jamais de boucle.
 var retryDelayOn503Ms = 2000;
+var delayBeforeFallbackMs = 5000;
 // Au plus 12 types de problèmes par appel : avec les 19 règles actuelles, un scan tient en 2 appels maximum.
 var maxGroupsPerCall = 12;
 // Une preuve très longue (ex. un en-tête CSP complet) est raccourcie pour garder un prompt compact.
@@ -167,10 +173,9 @@ function parseExplanations(text, groups) {
   return explanationsById;
 }
 
-// Un appel à Gemini pour un lot de groupes ; renvoie le texte de la réponse, ou null en cas d'échec.
-// isRetry vaut true pour la seconde tentative après un 503, afin de ne jamais réessayer en boucle.
-async function callGemini(groups, isRetry) {
-  var label = groups.map(function(group) { return group.finding.ruleId; }).join(', ');
+// Une seule tentative auprès d'un modèle donné.
+// Renvoie { text } en cas de succès, ou { status } en cas d'échec (code HTTP, ou null pour un timeout / une erreur réseau).
+async function callModel(model, groups, label) {
   var controller = new AbortController();
   var timeoutId = setTimeout(function() {
     controller.abort();
@@ -178,7 +183,7 @@ async function callGemini(groups, isRetry) {
 
   try {
     // La clé est ajoutée à l'URL ici uniquement ; cette URL n'est jamais affichée dans les logs.
-    var response = await fetch(GEMINI_ENDPOINT + '?key=' + encodeURIComponent(apiKey), {
+    var response = await fetch(GEMINI_API_BASE + model + ':generateContent?key=' + encodeURIComponent(apiKey), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -195,36 +200,54 @@ async function callGemini(groups, isRetry) {
       signal: controller.signal
     });
 
-    if (response.status === 503 && !isRetry) {
-      clearTimeout(timeoutId);
-      await wait(retryDelayOn503Ms);
-      return callGemini(groups, true);
-    }
-
     if (!response.ok) {
       // On ne logge que le code HTTP : ni l'URL (qui contient la clé), ni le corps de la réponse.
-      var reason = response.status === 429 ? 'limite de requêtes atteinte' : 'erreur de l’API';
-      console.error('Explications IA ignorées pour [' + label + '] : HTTP ' + response.status + ' (' + reason + ').');
-      return null;
+      var reason = response.status === 429 ? 'limite de requêtes atteinte'
+        : response.status === 503 ? 'modèle surchargé' : 'erreur de l’API';
+      console.error('Explication IA : ' + model + ' a échoué pour [' + label + '] : HTTP ' + response.status + ' (' + reason + ').');
+      return { status: response.status };
     }
 
     var data = await response.json();
     var candidate = data && data.candidates && data.candidates[0];
     var parts = candidate && candidate.content && candidate.content.parts;
     if (candidate && candidate.finishReason === 'MAX_TOKENS') {
-      console.error('Explications IA incomplètes pour [' + label + '] : réponse coupée par la limite de longueur.');
+      console.error('Explication IA : réponse de ' + model + ' coupée par la limite de longueur pour [' + label + '].');
     }
-    return Array.isArray(parts) ? parts.map(function(part) { return part.text || ''; }).join('') : null;
+    var text = Array.isArray(parts) ? parts.map(function(part) { return part.text || ''; }).join('') : '';
+    return text ? { text: text } : { status: response.status };
   } catch (error) {
     // On logge uniquement le type d'erreur, jamais l'objet complet (qui pourrait contenir l'URL).
     var errorType = error && error.name === 'AbortError'
       ? 'délai de ' + (requestTimeoutMs / 1000) + ' secondes dépassé'
       : 'erreur réseau' + (error && error.cause && error.cause.code ? ' (' + error.cause.code + ')' : '');
-    console.error('Explications IA ignorées pour [' + label + '] : ' + errorType + '.');
-    return null;
+    console.error('Explication IA : ' + model + ' a échoué pour [' + label + '] : ' + errorType + '.');
+    return { status: null };
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+// Un lot de groupes → texte de la réponse de Gemini, ou null si les 3 tentatives ont échoué.
+async function callGemini(groups) {
+  var label = groups.map(function(group) { return group.finding.ruleId; }).join(', ');
+
+  var result = await callModel(PRIMARY_MODEL, groups, label);
+
+  // 503 = surcharge passagère : on redonne une chance au modèle principal après 2 s.
+  if (!result.text && result.status === 503) {
+    await wait(retryDelayOn503Ms);
+    result = await callModel(PRIMARY_MODEL, groups, label);
+  }
+
+  // Toujours en échec (503, 429, timeout...) : dernier essai sur le modèle de secours après 5 s.
+  if (!result.text) {
+    console.error('Explication IA : bascule vers le modèle de secours ' + FALLBACK_MODEL + ' pour [' + label + '].');
+    await wait(delayBeforeFallbackMs);
+    result = await callModel(FALLBACK_MODEL, groups, label);
+  }
+
+  return result.text || null;
 }
 
 // Explique tous les findings d'un scan en 1 appel (2 si le scan contient plus de 12 types de problèmes).
