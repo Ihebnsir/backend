@@ -1,5 +1,12 @@
 var mongoose = require('mongoose');
 
+// Explication générée par l'IA ; les champs restent à null si l'IA n'a pas pu répondre.
+var aiExplanationSchema = new mongoose.Schema({
+  simpleExplanation: { type: String, default: null },
+  realWorldRisk: { type: String, default: null },
+  fixSteps: { type: String, default: null }
+}, { _id: false });
+
 var findingSchema = new mongoose.Schema({
   ruleId: { type: String, required: true },
   title: { type: String, required: true },
@@ -9,7 +16,9 @@ var findingSchema = new mongoose.Schema({
   evidence: { type: mongoose.Schema.Types.Mixed },
   description: { type: String, required: true },
   remediation: { type: String, required: true },
-  fixed: { type: Boolean, default: false }
+  fixed: { type: Boolean, default: false },
+  // null tant que le traitement IA de ce finding n'est pas terminé.
+  aiExplanation: { type: aiExplanationSchema, default: null }
 }, { _id: true });
 
 var scanSchema = new mongoose.Schema({

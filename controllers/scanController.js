@@ -1,6 +1,7 @@
 var mongoose = require('mongoose');
 var Scan = require('../models/Scan');
 var scanEngine = require('../services/scanEngine');
+var aiExplain = require('../services/aiExplain');
 
 var severityPenalties = { critical: 30, high: 20, medium: 10, low: 5, info: 0 };
 
@@ -14,6 +15,27 @@ function calculateScore(findings) {
 
 function isValidId(id) {
   return mongoose.Types.ObjectId.isValid(id);
+}
+
+// Tâche de fond lancée après la réponse HTTP : demande les explications IA
+// puis les enregistre sur chaque finding, retrouvé par son _id.
+async function attachAiExplanations(scan) {
+  if (!scan.findings.length) return;
+
+  var explanations = await aiExplain.explainFindings(scan.findings);
+  var update = {};
+  var arrayFilters = [];
+
+  scan.findings.forEach(function(finding, index) {
+    // Même en cas d'échec (champs à null), on enregistre l'objet : cela signale que le traitement est terminé.
+    update['findings.$[f' + index + '].aiExplanation'] = explanations[index];
+    var filter = {};
+    filter['f' + index + '._id'] = finding._id;
+    arrayFilters.push(filter);
+  });
+
+  // Si le scan a été supprimé entre-temps, cette mise à jour ne fait simplement rien.
+  await Scan.updateOne({ _id: scan._id }, { $set: update }, { arrayFilters: arrayFilters });
 }
 
 async function createScan(req, res, next) {
@@ -46,6 +68,29 @@ async function createScan(req, res, next) {
       score: calculateScore(scanResult.findings)
     });
     res.status(201).json(scan);
+
+    // Lancé sans await : le client a déjà sa réponse, l'IA travaille en arrière-plan.
+    // Le .catch empêche une erreur de l'IA ou de MongoDB de faire planter le serveur.
+    attachAiExplanations(scan).catch(function(error) {
+      console.error('Enregistrement des explications IA impossible pour le scan ' + scan._id + ' : ' + error.message);
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// Indique si toutes les explications IA d'un scan sont prêtes (même vides en cas d'échec de l'IA).
+async function getAiStatus(req, res, next) {
+  if (!isValidId(req.params.id)) return res.status(400).json({ error: 'Identifiant invalide' });
+
+  try {
+    var scan = await Scan.findOne({ _id: req.params.id, user: req.user._id }).select('findings.aiExplanation');
+    if (!scan) return res.status(404).json({ error: 'Scan introuvable' });
+
+    var ready = scan.findings.every(function(finding) {
+      return Boolean(finding.aiExplanation);
+    });
+    res.json({ ready: ready });
   } catch (error) {
     next(error);
   }
@@ -114,4 +159,4 @@ async function deleteScan(req, res, next) {
   }
 }
 
-module.exports = { createScan, listScans, getScan, updateFinding, deleteScan };
+module.exports = { createScan, listScans, getScan, getAiStatus, updateFinding, deleteScan };
