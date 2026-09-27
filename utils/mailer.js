@@ -1,4 +1,5 @@
 var nodemailer = require('nodemailer');
+var emailTemplates = require('./emailTemplates');
 
 var requiredSettings = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM'];
 var missingSettings = requiredSettings.filter(function(name) {
@@ -27,11 +28,25 @@ async function sendEmail(to, subject, html) {
   if (!transporter) return false;
 
   try {
+    var actionLink = typeof html === 'string' ? html.match(/<a\b[^>]*\bhref=["']([^"']+)["']/i) : null;
+    var messageHtml = html;
+
+    if (actionLink && subject === 'Bienvenue sur SecuLens - vérifiez votre adresse email') {
+      messageHtml = emailTemplates.welcomeEmail(actionLink[1]);
+    } else if (actionLink && subject === 'Réinitialisation de votre mot de passe SecuLens') {
+      messageHtml = emailTemplates.passwordResetEmail(actionLink[1]);
+    }
+
+    var configuredFrom = process.env.EMAIL_FROM.trim();
+    var from = configuredFrom.indexOf('<') === -1
+      ? 'SecuLens <' + configuredFrom + '>'
+      : configuredFrom;
+
     await transporter.sendMail({
-      from: process.env.EMAIL_FROM,
+      from: from,
       to: to,
       subject: subject,
-      html: html
+      html: messageHtml
     });
     return true;
   } catch (error) {

@@ -1,6 +1,6 @@
 var mongoose = require('mongoose');
 var Scan = require('../models/Scan');
-var mockFindings = require('../data/mockFindings');
+var scanEngine = require('../services/scanEngine');
 
 var severityPenalties = { critical: 30, high: 20, medium: 10, low: 5, info: 0 };
 
@@ -25,13 +25,25 @@ async function createScan(req, res, next) {
       return res.status(400).json({ error: 'Le body doit contenir uniquement un target HTTP ou HTTPS valide' });
     }
 
-    var findings = mockFindings.map(function(finding) { return Object.assign({}, finding); });
+    var scanResult = await scanEngine.runScan(target);
+    if (scanResult.error) {
+      if (scanResult.error.code === 'SSRF_REJECTED') {
+        return res.status(400).json({
+          error: 'Cible non autorisée pour des raisons de sécurité (adresse privée ou réservée).'
+        });
+      }
+
+      return res.status(422).json({
+        error: 'Impossible de joindre la cible. Vérifiez que l’URL est accessible.'
+      });
+    }
+
     var scan = await Scan.create({
       user: req.user._id,
       target: target,
-      status: 200,
-      findings: findings,
-      score: calculateScore(findings)
+      status: scanResult.status,
+      findings: scanResult.findings,
+      score: calculateScore(scanResult.findings)
     });
     res.status(201).json(scan);
   } catch (error) {

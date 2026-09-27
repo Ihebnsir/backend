@@ -10,6 +10,9 @@ var userSchema = new mongoose.Schema({
     match: /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   },
   password: { type: String, required: true, minlength: 8, select: false },
+  emailVerified: { type: Boolean, default: false },
+  emailVerificationToken: { type: String, select: false },
+  emailVerificationExpires: { type: Date, select: false },
   resetPasswordToken: { type: String, select: false },
   resetPasswordExpires: { type: Date, select: false }
 }, { timestamps: true });
