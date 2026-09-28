@@ -5,6 +5,14 @@ var activeTimeoutMs = 5000;
 var maximumSensitiveFileBytes = 64 * 1024;
 var sensitivePaths = ['/.env', '/.git/config', '/.git/HEAD'];
 var dangerousMethods = ['PUT', 'DELETE', 'TRACE'];
+// Liste fixe des endpoints testés par SEC-021 : aucun autre chemin n'est essayé.
+var exposedApiPaths = [
+  '/api/', '/api/v1/', '/api/docs', '/swagger.json', '/swagger/index.html',
+  '/graphql', '/admin', '/api/admin'
+];
+// Chemins dont le contenu légitime peut être une page HTML (docs ou administration).
+var htmlApiPaths = ['/api/docs', '/swagger/index.html', '/admin'];
+var maximumApiFindings = 3;
 
 function createFinding(ruleId, title, severity, cwe, evidence, description, remediation) {
   return {
@@ -85,11 +93,39 @@ async function fetchStatus(url, method, signal) {
   }
 }
 
-function contentMatchesSensitivePath(path, contentType, body) {
+function isHtmlResponse(contentType, body) {
   var normalizedType = (contentType || '').split(';')[0].trim().toLowerCase();
   var beginning = (body || '').replace(/^\uFEFF/, '').trimStart();
+  return normalizedType === 'text/html' || /^(?:<!doctype\s+html\b|<html\b)/i.test(beginning);
+}
 
-  if (normalizedType === 'text/html' || /^(?:<!doctype\s+html\b|<html\b)/i.test(beginning)) {
+function isValidJson(body) {
+  try {
+    JSON.parse(body);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+// M\u00EAme garde-fou anti-faux-positif que SEC-019 : une r\u00E9ponse HTML n'est retenue que pour
+// les pages de docs/admin et seulement si elle diff\u00E8re du fallback de la SPA (page racine).
+function contentMatchesApiPath(path, result, fallbackBody) {
+  var body = result.body || '';
+  if (!body.trim()) return false;
+
+  if (isHtmlResponse(result.contentType, body)) {
+    if (htmlApiPaths.indexOf(path) === -1) return false;
+    return fallbackBody !== null && body.trim() !== fallbackBody.trim();
+  }
+
+  return isValidJson(body);
+}
+
+function contentMatchesSensitivePath(path, contentType, body) {
+  var beginning = (body || '').replace(/^\uFEFF/, '').trimStart();
+
+  if (isHtmlResponse(contentType, body)) {
     return false;
   }
 
@@ -132,7 +168,17 @@ async function evaluateActive(target) {
           return { path: path, result: result };
         });
       });
+      // La page racine sert de référence pour reconnaître le fallback HTML d'une SPA.
+      var fallbackResultPromise = fetchStatus(baseUrl.href, 'GET', controller.signal);
+      var apiResultPromises = exposedApiPaths.map(function(path) {
+        var apiUrl = new URL(path, baseUrl);
+        return fetchStatus(apiUrl.href, 'GET', controller.signal).then(function(result) {
+          return { path: path, result: result };
+        });
+      });
       var results = await Promise.all([optionsResultPromise].concat(fileResultPromises));
+      var fallbackResult = await fallbackResultPromise;
+      var apiResults = await Promise.all(apiResultPromises);
       if (timedOut) return [];
 
       var findings = [];
@@ -169,6 +215,32 @@ async function evaluateActive(target) {
           { path: entry.path, status: entry.result.status },
           'Un fichier de configuration ou de métadonnées internes est accessible par une requête HTTP.',
           'Retirer ce fichier de la racine publique et configurer le serveur pour en refuser l’accès.'
+        ));
+      });
+
+      var fallbackBody = fallbackResult ? fallbackResult.body : null;
+      var exposedApis = apiResults.filter(function(entry) {
+        return entry.result && entry.result.status === 200 &&
+          contentMatchesApiPath(entry.path, entry.result, fallbackBody);
+      });
+
+      // Au plus 3 findings pour ne pas noyer les résultats ; le total figure dans le premier.
+      exposedApis.slice(0, maximumApiFindings).forEach(function(entry, index) {
+        var evidence = {
+          path: entry.path,
+          status: entry.result.status,
+          contentType: (entry.result.contentType.split(';')[0].trim() || 'inconnu').slice(0, 60)
+        };
+        if (index === 0) evidence.totalFound = exposedApis.length;
+
+        findings.push(createFinding(
+          'SEC-021',
+          'Endpoint API ou d’administration exposé',
+          'medium',
+          'CWE-284',
+          evidence,
+          'Un endpoint API, de documentation ou d’administration répond publiquement avec un contenu réel.',
+          'Vérifier que cet endpoint doit être public ; sinon le retirer ou le protéger par une authentification et un contrôle d’accès.'
         ));
       });
 
