@@ -2,7 +2,7 @@
 // À INCRÉMENTER À LA MAIN à chaque ajout, suppression ou modification d'une règle :
 // deux scores ne sont comparables que s'ils ont été produits par la même version.
 // Historique : 1.0 = 20 règles (SEC-001 à SEC-020). Les scans plus anciens n'ont pas de version.
-var SCANNER_VERSION = '1.2';
+var SCANNER_VERSION = '1.3';
 
 var httpProbe = require('./httpProbe');
 var securityRules = require('./securityRules');

@@ -13,6 +13,20 @@ var exposedApiPaths = [
 // Chemins dont le contenu légitime peut être une page HTML (docs ou administration).
 var htmlApiPaths = ['/api/docs', '/swagger/index.html', '/admin'];
 var maximumApiFindings = 3;
+// SEC-023 : liste fixe et fermée des ports testés, aucun autre port n'est jamais essayé.
+// Les bases de données sont en "high" : un accès direct aux données est plus grave qu'un SSH standard.
+var sensitivePorts = [
+  { port: 21, commonService: 'FTP', severity: 'medium' },
+  { port: 22, commonService: 'SSH', severity: 'medium' },
+  { port: 23, commonService: 'Telnet', severity: 'medium' },
+  { port: 3306, commonService: 'MySQL', severity: 'high' },
+  { port: 5432, commonService: 'PostgreSQL', severity: 'high' },
+  { port: 6379, commonService: 'Redis', severity: 'high' },
+  { port: 27017, commonService: 'MongoDB', severity: 'high' },
+  { port: 9200, commonService: 'Elasticsearch', severity: 'medium' }
+];
+var portTimeoutMs = 500;
+var maximumPortFindings = 5;
 
 function createFinding(ruleId, title, severity, cwe, evidence, description, remediation) {
   return {
@@ -222,6 +236,29 @@ function contentMatchesSensitivePath(path, contentType, body) {
   return false;
 }
 
+// Tente une simple connexion TCP : on ne lit rien et on n'envoie rien (pas de bannière,
+// pas d'identification du service), la socket est fermée dès que la connexion aboutit.
+// Échec, refus ou délai dépassé signifient seulement "fermé ou filtré" : jamais d'erreur remontée.
+function isPortOpen(host, port) {
+  return new Promise(function(resolve) {
+    var socket = new net.Socket();
+    var settled = false;
+
+    function finish(open) {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(open);
+    }
+
+    socket.setTimeout(portTimeoutMs);
+    socket.once('connect', function() { finish(true); });
+    socket.once('timeout', function() { finish(false); });
+    socket.once('error', function() { finish(false); });
+    socket.connect(port, host);
+  });
+}
+
 async function evaluateActive(target) {
   var controller = new AbortController();
   var timedOut = false;
@@ -264,10 +301,20 @@ async function evaluateActive(target) {
         });
       });
       var wordPressPromise = detectWordPress(baseUrl, fallbackResultPromise, controller.signal);
+      // SEC-023 est la vérification la plus intrusive : sonder des ports hors HTTP ressemble à un scan
+      // de ports, ce qui sur une machine tierce serait une intrusion. Elle n'existe donc que derrière le
+      // garde-fou localhost ci-dessus, sans exception ni paramètre pour l'élargir. On se connecte à l'IP
+      // de boucle locale déjà validée (resolvedIp), jamais à un nom qui pourrait être résolu à nouveau.
+      var portResultsPromise = Promise.all(sensitivePorts.map(function(entry) {
+        return isPortOpen(resolvedIp, entry.port).then(function(open) {
+          return { entry: entry, open: open };
+        });
+      }));
       var results = await Promise.all([optionsResultPromise].concat(fileResultPromises));
       var fallbackResult = await fallbackResultPromise;
       var apiResults = await Promise.all(apiResultPromises);
       var wordPress = await wordPressPromise;
+      var portResults = await portResultsPromise;
       if (timedOut) return [];
 
       var findings = [];
@@ -334,6 +381,22 @@ async function evaluateActive(target) {
       });
 
       if (wordPress) findings.push(createWordPressFinding(wordPress));
+
+      // Le finding constate seulement que le port répond : le service réel n'est ni identifié ni confirmé.
+      portResults.filter(function(result) { return result.open; })
+        .slice(0, maximumPortFindings)
+        .forEach(function(result) {
+          findings.push(createFinding(
+            'SEC-023',
+            'Port TCP sensible ouvert',
+            result.entry.severity,
+            'CWE-200',
+            { port: result.entry.port, commonService: result.entry.commonService },
+            'Le port ' + result.entry.port + ' accepte les connexions TCP. Il est habituellement utilisé par ' +
+              result.entry.commonService + ', mais le service réellement présent n’a pas été vérifié.',
+            'Fermer ce port s’il n’est pas nécessaire, ou restreindre son accès par pare-feu aux seules machines autorisées.'
+          ));
+        });
 
       return findings;
     })();
