@@ -108,18 +108,105 @@ function isValidJson(body) {
   }
 }
 
-// M\u00EAme garde-fou anti-faux-positif que SEC-019 : une r\u00E9ponse HTML n'est retenue que pour
-// les pages de docs/admin et seulement si elle diff\u00E8re du fallback de la SPA (page racine).
+// Une réponse HTML identique à la page racine est le fallback d'une SPA, pas une vraie page.
+function differsFromFallback(body, fallbackBody) {
+  return fallbackBody !== null && (body || '').trim() !== fallbackBody.trim();
+}
+
+// Même garde-fou anti-faux-positif que SEC-019 : une réponse HTML n'est retenue que pour
+// les pages de docs/admin et seulement si elle diffère du fallback de la SPA (page racine).
 function contentMatchesApiPath(path, result, fallbackBody) {
   var body = result.body || '';
   if (!body.trim()) return false;
 
   if (isHtmlResponse(result.contentType, body)) {
     if (htmlApiPaths.indexOf(path) === -1) return false;
-    return fallbackBody !== null && body.trim() !== fallbackBody.trim();
+    return differsFromFallback(body, fallbackBody);
   }
 
   return isValidJson(body);
+}
+
+// Extrait la version depuis <meta name="generator" content="WordPress X.Y[.Z]">,
+// seule source jugée fiable pour la version (l'ordre des attributs peut varier).
+function extractWordPressVersion(html) {
+  var metaTags = (html || '').match(/<meta\b[^>]*>/gi) || [];
+  for (var i = 0; i < metaTags.length; i++) {
+    if (!/\bname\s*=\s*["']?generator\b/i.test(metaTags[i])) continue;
+    var match = metaTags[i].match(/\bcontent\s*=\s*["']?\s*WordPress\s+(\d+(?:\.\d+){0,2})/i);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+// Détection séquentielle de WordPress : chaque indice n'est testé que si le précédent a échoué,
+// avec au plus une requête par étape. La page racine (étape b) est déjà téléchargée comme
+// référence du fallback SPA, elle ne coûte donc aucune requête supplémentaire.
+async function detectWordPress(baseUrl, fallbackResultPromise, signal) {
+  var loginResult = await fetchStatus(new URL('/wp-login.php', baseUrl).href, 'GET', signal);
+  var fallbackResult = await fallbackResultPromise;
+  var rootBody = fallbackResult && fallbackResult.status === 200 ? fallbackResult.body : null;
+  // La version vient toujours de la meta generator de la page racine, quel que soit l'indice.
+  var version = extractWordPressVersion(rootBody);
+
+  if (loginResult && loginResult.status === 200 &&
+      /wp-submit|user_login/.test(loginResult.body || '')) {
+    return { method: 'wp-login', version: version };
+  }
+  if (version) return { method: 'meta-generator', version: version };
+
+  var contentResult = await fetchStatus(new URL('/wp-content/', baseUrl).href, 'GET', signal);
+  if (contentResult && contentResult.status === 200 &&
+      (!isHtmlResponse(contentResult.contentType, contentResult.body) ||
+        differsFromFallback(contentResult.body, rootBody))) {
+    return { method: 'wp-content', version: null };
+  }
+  return null;
+}
+
+// Liste pédagogique simplifiée, PAS une vraie base de vulnérabilités : seuils statiques
+// (< 6.0 obsolète, 6.0–6.2 datée) choisis pour illustrer le principe. Retourne null si récente.
+function classifyWordPressVersion(version) {
+  var parts = version.split('.').map(Number);
+  var major = parts[0];
+  var minor = parts[1] || 0;
+  if (major < 6) {
+    return { severity: 'high', message: 'version majeure obsolète, mises à jour de sécurité manquantes' };
+  }
+  if (major === 6 && minor < 3) {
+    return { severity: 'medium', message: 'version datée, vérifier les mises à jour disponibles' };
+  }
+  return null;
+}
+
+function createWordPressFinding(detection) {
+  var evidence = { method: detection.method };
+  if (detection.version) evidence.version = detection.version;
+
+  var outdated = detection.version ? classifyWordPressVersion(detection.version) : null;
+  if (outdated) {
+    return createFinding(
+      'SEC-022',
+      'Version de WordPress obsolète',
+      outdated.severity,
+      'CWE-1104',
+      evidence,
+      'WordPress ' + detection.version + ' détecté : ' + outdated.message + '.',
+      'Mettre à jour WordPress vers la dernière version stable, ainsi que les thèmes et extensions.'
+    );
+  }
+
+  return createFinding(
+    'SEC-022',
+    'WordPress détecté',
+    'info',
+    'CWE-200',
+    evidence,
+    detection.version
+      ? 'WordPress ' + detection.version + ' détecté.'
+      : 'WordPress détecté, version non déterminée.',
+    'Garder WordPress à jour et envisager de masquer la balise meta generator qui révèle la version.'
+  );
 }
 
 function contentMatchesSensitivePath(path, contentType, body) {
@@ -176,9 +263,11 @@ async function evaluateActive(target) {
           return { path: path, result: result };
         });
       });
+      var wordPressPromise = detectWordPress(baseUrl, fallbackResultPromise, controller.signal);
       var results = await Promise.all([optionsResultPromise].concat(fileResultPromises));
       var fallbackResult = await fallbackResultPromise;
       var apiResults = await Promise.all(apiResultPromises);
+      var wordPress = await wordPressPromise;
       if (timedOut) return [];
 
       var findings = [];
@@ -243,6 +332,8 @@ async function evaluateActive(target) {
           'Vérifier que cet endpoint doit être public ; sinon le retirer ou le protéger par une authentification et un contrôle d’accès.'
         ));
       });
+
+      if (wordPress) findings.push(createWordPressFinding(wordPress));
 
       return findings;
     })();
