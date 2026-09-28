@@ -2,13 +2,14 @@
 // À INCRÉMENTER À LA MAIN à chaque ajout, suppression ou modification d'une règle :
 // deux scores ne sont comparables que s'ils ont été produits par la même version.
 // Historique : 1.0 = 20 règles (SEC-001 à SEC-020). Les scans plus anciens n'ont pas de version.
-var SCANNER_VERSION = '1.3';
+var SCANNER_VERSION = '1.4';
 
 var httpProbe = require('./httpProbe');
 var securityRules = require('./securityRules');
 var tlsRules = require('./tlsRules');
 var htmlRules = require('./htmlRules');
 var activeRules = require('./activeRules');
+var dnsRules = require('./dnsRules');
 
 function createRedirectFinding(probeResult) {
   var destinationWasBlocked = Boolean(probeResult.redirectBlocked);
@@ -88,6 +89,9 @@ async function runScan(target) {
     }).catch(function() { return []; }),
     Promise.resolve().then(function() {
       return activeRules.evaluateActive(target);
+    }).catch(function() { return []; }),
+    Promise.resolve().then(function() {
+      return dnsRules.evaluateDns(target);
     }).catch(function() { return []; })
   ]);
 
