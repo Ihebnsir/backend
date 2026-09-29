@@ -8,7 +8,14 @@ var authRouter = require('./routes/auth');
 
 var app = express();
 
-app.use(cors({ origin: 'http://localhost:3000' }));
+// localhost:3000 reste autorisé pour le dev ; FRONTEND_URL ajoute l'origine de production.
+var allowedOrigins = ['http://localhost:3000'];
+
+if (process.env.FRONTEND_URL) {
+  allowedOrigins.push(process.env.FRONTEND_URL.trim().replace(/\/+$/, ''));
+}
+
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json({ limit: '100kb' }));
 
 app.get('/api/health', function(req, res) {
