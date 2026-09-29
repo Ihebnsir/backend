@@ -2,6 +2,7 @@ var mongoose = require('mongoose');
 var Scan = require('../models/Scan');
 var scanEngine = require('../services/scanEngine');
 var aiExplain = require('../services/aiExplain');
+var scanCompare = require('../services/scanCompare');
 
 var severityPenalties = { critical: 30, high: 20, medium: 10, low: 5, info: 0 };
 // Baisse minimale (en points) pour signaler une régression par rapport au scan précédent.
@@ -124,6 +125,43 @@ async function getAiStatus(req, res, next) {
   }
 }
 
+// Compare un scan au scan précédent du même utilisateur sur le même target (comparaison stricte
+// du target, comme findScoreRegression). L'appariement des findings est décrit dans services/scanCompare.js.
+async function compareWithPrevious(req, res, next) {
+  if (!isValidId(req.params.id)) return res.status(400).json({ error: 'Identifiant invalide' });
+
+  try {
+    var scan = await Scan.findOne({ _id: req.params.id, user: req.user._id }).select('target score createdAt findings');
+    if (!scan) return res.status(404).json({ error: 'Scan introuvable' });
+
+    // Le plus récent des scans antérieurs ; à createdAt identique, l'_id sert à départager.
+    var previousScan = await Scan.findOne({
+      user: req.user._id,
+      target: scan.target,
+      $or: [
+        { createdAt: { $lt: scan.createdAt } },
+        { createdAt: scan.createdAt, _id: { $lt: scan._id } }
+      ]
+    }).sort({ createdAt: -1, _id: -1 }).select('score findings');
+
+    // Le scan demandé est le plus ancien de ce target : rien à comparer.
+    if (!previousScan) return res.json({ hasPrevious: false });
+
+    var comparison = scanCompare.compareFindings(previousScan.findings, scan.findings);
+    res.json({
+      hasPrevious: true,
+      previousScanId: previousScan._id,
+      previousScore: previousScan.score,
+      currentScore: scan.score,
+      fixed: comparison.fixed,
+      new: comparison.new,
+      persisting: comparison.persisting
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function listScans(req, res, next) {
   try {
     var scans = await Scan.find({ user: req.user._id }).sort({ createdAt: -1 }).select('target score createdAt findings scannerVersion');
@@ -188,4 +226,4 @@ async function deleteScan(req, res, next) {
   }
 }
 
-module.exports = { createScan, listScans, getScan, getAiStatus, updateFinding, deleteScan };
+module.exports = { createScan, listScans, getScan, getAiStatus, compareWithPrevious, updateFinding, deleteScan };
