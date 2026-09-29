@@ -3,7 +3,8 @@
 // deux scores ne sont comparables que s'ils ont été produits par la même version.
 // Historique : 1.0 = 20 règles (SEC-001 à SEC-020). Les scans plus anciens n'ont pas de version.
 // 1.5 = ajout de SEC-025 (librairies JavaScript obsolètes, services/jsLibRules.js).
-var SCANNER_VERSION = '1.5';
+// 1.6 = ajout de SEC-026 (en-têtes de limitation de débit sur la page de connexion, activeRules.js).
+var SCANNER_VERSION = '1.6';
 
 var httpProbe = require('./httpProbe');
 var securityRules = require('./securityRules');

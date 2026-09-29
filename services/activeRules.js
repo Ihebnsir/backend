@@ -27,6 +27,11 @@ var sensitivePorts = [
 ];
 var portTimeoutMs = 500;
 var maximumPortFindings = 5;
+// SEC-026 : chemins de connexion essayés dans l'ordre, un par un, jusqu'au premier qui existe.
+var loginPaths = ['/login', '/api/login', '/api/auth/login', '/wp-login.php'];
+// En-têtes standard par lesquels un serveur annonce sa limitation de débit.
+// Headers.get() est déjà insensible à la casse.
+var rateLimitHeaders = ['x-ratelimit-limit', 'x-ratelimit-remaining', 'ratelimit-limit', 'ratelimit-remaining', 'retry-after'];
 
 function createFinding(ruleId, title, severity, cwe, evidence, description, remediation) {
   return {
@@ -99,6 +104,7 @@ async function fetchStatus(url, method, signal) {
     return {
       status: status,
       allow: response.headers.get('allow') || '',
+      headers: response.headers,
       contentType: contentType,
       body: body
     };
@@ -156,8 +162,8 @@ function extractWordPressVersion(html) {
 // Détection séquentielle de WordPress : chaque indice n'est testé que si le précédent a échoué,
 // avec au plus une requête par étape. La page racine (étape b) est déjà téléchargée comme
 // référence du fallback SPA, elle ne coûte donc aucune requête supplémentaire.
-async function detectWordPress(baseUrl, fallbackResultPromise, signal) {
-  var loginResult = await fetchStatus(new URL('/wp-login.php', baseUrl).href, 'GET', signal);
+async function detectWordPress(baseUrl, fallbackResultPromise, wpLoginResultPromise, signal) {
+  var loginResult = await wpLoginResultPromise;
   var fallbackResult = await fallbackResultPromise;
   var rootBody = fallbackResult && fallbackResult.status === 200 ? fallbackResult.body : null;
   // La version vient toujours de la meta generator de la page racine, quel que soit l'indice.
@@ -220,6 +226,56 @@ function createWordPressFinding(detection) {
       ? 'WordPress ' + detection.version + ' détecté.'
       : 'WordPress détecté, version non déterminée.',
     'Garder WordPress à jour et envisager de masquer la balise meta generator qui révèle la version.'
+  );
+}
+
+// SEC-026 : recherche d'une page de connexion par de simples GET, comme un visiteur qui
+// charge la page. Aucun identifiant n'est envoyé et aucune connexion n'est tentée.
+// Les chemins sont essayés l'un après l'autre et la recherche s'arrête au premier qui
+// renvoie un vrai contenu : jamais plus d'une requête par chemin.
+// Même garde-fou anti-faux-positif que SEC-019/021 : une page HTML identique à la page
+// racine est le fallback d'une SPA, pas une vraie page de connexion.
+// /wp-login.php est déjà téléchargé pour SEC-022 : sa réponse est réutilisée, pas redemandée.
+async function findLoginResponse(baseUrl, fallbackResultPromise, wpLoginResultPromise, signal) {
+  var fallbackResult = await fallbackResultPromise;
+  var fallbackBody = fallbackResult ? fallbackResult.body : null;
+
+  for (var index = 0; index < loginPaths.length; index++) {
+    var path = loginPaths[index];
+    var result = path === '/wp-login.php'
+      ? await wpLoginResultPromise
+      : await fetchStatus(new URL(path, baseUrl).href, 'GET', signal);
+    if (!result || result.status !== 200 || !(result.body || '').trim()) continue;
+
+    var isRealContent = isHtmlResponse(result.contentType, result.body)
+      ? differsFromFallback(result.body, fallbackBody)
+      : isValidJson(result.body);
+    if (isRealContent) return { path: path, result: result };
+  }
+  return null;
+}
+
+// Indice FAIBLE : l'absence d'en-tête de limitation est une absence de preuve, pas une preuve
+// d'absence. Beaucoup de protections valides (limitation après échec seulement, blocage par
+// pare-feu, CAPTCHA, verrouillage de compte) n'exposent aucun en-tête sur un simple GET.
+// Ce n'est pas un test de force brute : on lit seulement les en-têtes d'une réponse normale.
+function createRateLimitFinding(login) {
+  var headers = login.result.headers;
+  var announcesRateLimit = rateLimitHeaders.some(function(name) {
+    return headers && headers.get(name) !== null;
+  });
+  if (announcesRateLimit) return null;
+
+  return createFinding(
+    'SEC-026',
+    'Aucune limitation de débit annoncée sur la page de connexion',
+    'low',
+    'CWE-307',
+    { route: login.path },
+    'La page de connexion ' + login.path + ' ne renvoie aucun en-tête standard de limitation de débit ' +
+      '(RateLimit-*, X-RateLimit-*, Retry-After). Ce n’est qu’un indice : une protection peut exister sans être annoncée.',
+    'Vérifier manuellement que les tentatives de connexion répétées sont limitées (par IP et par compte), ' +
+      'par exemple avec un middleware de limitation de débit, un verrouillage temporaire ou un CAPTCHA.'
   );
 }
 
@@ -300,7 +356,10 @@ async function evaluateActive(target) {
           return { path: path, result: result };
         });
       });
-      var wordPressPromise = detectWordPress(baseUrl, fallbackResultPromise, controller.signal);
+      // Une seule requête vers /wp-login.php, partagée entre SEC-022 et SEC-026.
+      var wpLoginResultPromise = fetchStatus(new URL('/wp-login.php', baseUrl).href, 'GET', controller.signal);
+      var wordPressPromise = detectWordPress(baseUrl, fallbackResultPromise, wpLoginResultPromise, controller.signal);
+      var loginPromise = findLoginResponse(baseUrl, fallbackResultPromise, wpLoginResultPromise, controller.signal);
       // SEC-023 est la vérification la plus intrusive : sonder des ports hors HTTP ressemble à un scan
       // de ports, ce qui sur une machine tierce serait une intrusion. Elle n'existe donc que derrière le
       // garde-fou localhost ci-dessus, sans exception ni paramètre pour l'élargir. On se connecte à l'IP
@@ -314,6 +373,7 @@ async function evaluateActive(target) {
       var fallbackResult = await fallbackResultPromise;
       var apiResults = await Promise.all(apiResultPromises);
       var wordPress = await wordPressPromise;
+      var login = await loginPromise;
       var portResults = await portResultsPromise;
       if (timedOut) return [];
 
@@ -381,6 +441,10 @@ async function evaluateActive(target) {
       });
 
       if (wordPress) findings.push(createWordPressFinding(wordPress));
+
+      // Aucune page de connexion trouvée : on ne peut rien conclure, donc aucun finding.
+      var rateLimitFinding = login ? createRateLimitFinding(login) : null;
+      if (rateLimitFinding) findings.push(rateLimitFinding);
 
       // Le finding constate seulement que le port répond : le service réel n'est ni identifié ni confirmé.
       portResults.filter(function(result) { return result.open; })
