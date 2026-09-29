@@ -4,6 +4,8 @@ var scanEngine = require('../services/scanEngine');
 var aiExplain = require('../services/aiExplain');
 
 var severityPenalties = { critical: 30, high: 20, medium: 10, low: 5, info: 0 };
+// Baisse minimale (en points) pour signaler une régression par rapport au scan précédent.
+var regressionThreshold = 15;
 
 function calculateScore(findings) {
   var penalty = findings.reduce(function(total, finding) {
@@ -38,6 +40,27 @@ async function attachAiExplanations(scan) {
   await Scan.updateOne({ _id: scan._id }, { $set: update }, { arrayFilters: arrayFilters });
 }
 
+// Compare le nouveau score au dernier scan du même utilisateur sur le même target.
+// Le projet ne normalise pas les URL : la comparaison du target est stricte
+// (http://site.fr et http://site.fr/ sont donc deux targets différents).
+// Ne lève jamais d'erreur : en cas d'échec, le scan est créé sans scoreRegression.
+async function findScoreRegression(userId, target, newScore) {
+  try {
+    var previousScan = await Scan.findOne({ user: userId, target: target })
+      .sort({ createdAt: -1 })
+      .select('score');
+    if (!previousScan) return null;
+
+    var drop = previousScan.score - newScore;
+    if (drop < regressionThreshold) return null;
+
+    return { previousScore: previousScan.score, previousScanId: previousScan._id, drop: drop };
+  } catch (error) {
+    console.error('Recherche du scan précédent impossible, scan créé sans comparaison : ' + error.message);
+    return null;
+  }
+}
+
 async function createScan(req, res, next) {
   try {
     var keys = Object.keys(req.body || {});
@@ -60,13 +83,17 @@ async function createScan(req, res, next) {
       });
     }
 
+    var score = calculateScore(scanResult.findings);
+    var scoreRegression = await findScoreRegression(req.user._id, target, score);
+
     var scan = await Scan.create({
       user: req.user._id,
       target: target,
       status: scanResult.status,
       findings: scanResult.findings,
-      score: calculateScore(scanResult.findings),
-      scannerVersion: scanEngine.SCANNER_VERSION
+      score: score,
+      scannerVersion: scanEngine.SCANNER_VERSION,
+      scoreRegression: scoreRegression || undefined
     });
     res.status(201).json(scan);
 

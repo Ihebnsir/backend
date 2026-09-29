@@ -4,7 +4,8 @@
 // Historique : 1.0 = 20 règles (SEC-001 à SEC-020). Les scans plus anciens n'ont pas de version.
 // 1.5 = ajout de SEC-025 (librairies JavaScript obsolètes, services/jsLibRules.js).
 // 1.6 = ajout de SEC-026 (en-têtes de limitation de débit sur la page de connexion, activeRules.js).
-var SCANNER_VERSION = '1.6';
+// 1.7 = ajout de la catégorie OWASP Top 10 2021 sur chaque finding (services/owaspMapping.js), sans nouvelle règle.
+var SCANNER_VERSION = '1.7';
 
 var httpProbe = require('./httpProbe');
 var securityRules = require('./securityRules');
@@ -13,6 +14,7 @@ var htmlRules = require('./htmlRules');
 var activeRules = require('./activeRules');
 var dnsRules = require('./dnsRules');
 var jsLibRules = require('./jsLibRules');
+var owaspMapping = require('./owaspMapping');
 
 function createRedirectFinding(probeResult) {
   var destinationWasBlocked = Boolean(probeResult.redirectBlocked);
@@ -112,6 +114,13 @@ async function runScan(target) {
   if (probeResult.bodyTruncated) {
     findings.push(createTruncatedBodyFinding());
   }
+
+  // Enrichissement centralisé ici plutôt que dans chaque createFinding : les fichiers de règles
+  // restent inchangés. Une règle absente de la table n'a simplement pas de champ owasp.
+  findings.forEach(function(finding) {
+    var owasp = owaspMapping.getOwaspCategory(finding.ruleId);
+    if (owasp) finding.owasp = owasp;
+  });
 
   return {
     status: probeResult.status,
