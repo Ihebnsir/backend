@@ -15,12 +15,17 @@ function createToken(userId) {
   return jwt.sign({ id: userId.toString() }, process.env.JWT_SECRET, { expiresIn: '7d' });
 }
 
+// Base des liens envoyés par email : FRONTEND_URL en production, localhost:3000 en dev.
+function frontendUrl() {
+  return (process.env.FRONTEND_URL || 'http://localhost:3000').trim().replace(/\/+$/, '');
+}
+
 function userResponse(user) {
   return { id: user._id, email: user.email };
 }
 
 function sendVerificationEmail(email, token) {
-  var verificationUrl = 'http://localhost:3000/verify-email/' + encodeURIComponent(token);
+  var verificationUrl = frontendUrl() + '/verify-email/' + encodeURIComponent(token);
   var welcomeHtml = '<p>Bienvenue sur SecuLens.</p>' +
     '<p><a href="' + verificationUrl + '">Vérifier mon adresse email</a></p>' +
     '<p>Ce lien expire dans 24 heures.</p>';
@@ -145,7 +150,7 @@ async function forgotPassword(req, res, next) {
     user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000);
     await user.save();
 
-    var resetUrl = 'http://localhost:3000/reset-password/' + resetToken;
+    var resetUrl = frontendUrl() + '/reset-password/' + resetToken;
     var html = '<p>Vous avez demandé à réinitialiser le mot de passe de votre compte SecuLens.</p>' +
       '<p><a href="' + resetUrl + '">Réinitialiser mon mot de passe</a></p>' +
       '<p>Ce lien expire dans 1 heure. Ignorez cet email si vous n’êtes pas à l’origine de cette demande.</p>';
