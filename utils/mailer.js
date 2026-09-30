@@ -1,7 +1,7 @@
 var nodemailer = require('nodemailer');
 var emailTemplates = require('./emailTemplates');
 
-var requiredSettings = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM'];
+var requiredSettings = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM'];
 var missingSettings = requiredSettings.filter(function(name) {
   return !process.env[name] || !process.env[name].trim();
 });
@@ -13,11 +13,20 @@ if (missingSettings.length) {
 } else if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
   console.warn('Email désactivé : SMTP_PORT doit être un numéro de port valide.');
 } else {
-  // Toute la configuration vient de l'environnement : aucune valeur codée en dur.
+  // Le mode de chiffrement se déduit de SMTP_PORT (aucun port codé en dur) :
+  // - port 465 : SSL/TLS implicite, la connexion est chiffrée dès le premier octet (secure: true) ;
+  // - autre port (587, 2525…) : connexion en clair puis passage en TLS via la commande STARTTLS
+  //   (secure: false). requireTLS: true refuse d'envoyer si le serveur ne propose pas STARTTLS,
+  //   donc les identifiants et le message ne circulent jamais en clair.
+  // SMTP_SECURE n'est plus utilisé : un SMTP_SECURE=true oublié avec le port 587 casserait l'envoi.
+  var implicitTls = smtpPort === 465;
   transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: smtpPort,
-    secure: process.env.SMTP_SECURE.toLowerCase() === 'true' || process.env.SMTP_SECURE === '1',
+    secure: implicitTls,
+    requireTLS: !implicitTls,
+    // Échec rapide (10 s au lieu de 2 min par défaut) pour qu'un port bloqué apparaisse vite dans les logs.
+    connectionTimeout: 10000,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASSWORD
