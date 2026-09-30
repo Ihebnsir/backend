@@ -17,12 +17,8 @@ async function protect(req, res, next) {
   try {
     var user = decoded && decoded.id ? await User.findById(decoded.id) : null;
     if (!user) return res.status(401).json({ error: 'Session invalide, reconnectez-vous' });
-    if (!user.emailVerified) {
-      return res.status(403).json({
-        error: 'Veuillez vérifier votre email avant de vous connecter.',
-        emailVerified: false
-      });
-    }
+    // Pas de contrôle d'emailVerified : la vérification n'est plus obligatoire, car l'envoi
+    // SMTP n'est pas fiable en production (voir authController.register et login).
     req.user = user;
     next();
   } catch (error) {

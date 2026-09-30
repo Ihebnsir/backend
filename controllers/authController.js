@@ -56,11 +56,11 @@ async function register(req, res, next) {
       emailVerificationToken: hashToken(verificationToken),
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
     });
+    // L'email de vérification reste envoyé (sans attendre : un échec SMTP ne bloque rien),
+    // mais la vérification n'est plus obligatoire : l'envoi SMTP n'est pas fiable en
+    // production, donc l'utilisateur reçoit sa session immédiatement.
     sendVerificationEmail(email, verificationToken);
-    res.status(201).json({
-      message: 'Compte créé. Vérifiez votre email pour activer votre compte.',
-      email: email
-    });
+    res.status(201).json({ token: createToken(user._id), user: userResponse(user) });
   } catch (error) {
     if (error.code === 11000) return res.status(409).json({ error: 'Cette adresse email est déjà utilisée' });
     next(error);
@@ -78,12 +78,8 @@ async function login(req, res, next) {
       : false;
 
     if (!passwordMatches) return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
-    if (!user.emailVerified) {
-      return res.status(403).json({
-        error: 'Veuillez vérifier votre email avant de vous connecter.',
-        emailVerified: false
-      });
-    }
+    // emailVerified n'est plus contrôlé ici : l'envoi SMTP n'étant pas fiable en production,
+    // exiger la vérification pourrait bloquer définitivement un utilisateur légitime.
 
     res.json({ token: createToken(user._id), user: userResponse(user) });
   } catch (error) {
