@@ -1,31 +1,20 @@
-var nodemailer = require('nodemailer');
 var emailTemplates = require('./emailTemplates');
 
-var requiredSettings = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'EMAIL_FROM'];
+var RESEND_API_URL = 'https://api.resend.com/emails';
+var RESEND_TIMEOUT_MS = 10000;
+
+var requiredSettings = ['RESEND_API_KEY', 'EMAIL_FROM'];
 var missingSettings = requiredSettings.filter(function(name) {
   return !process.env[name] || !process.env[name].trim();
 });
-var smtpPort = Number(process.env.SMTP_PORT);
-var transporter = null;
+var emailEnabled = missingSettings.length === 0;
 
-if (missingSettings.length) {
-  console.warn('Email désactivé : variables SMTP manquantes dans .env (' + missingSettings.join(', ') + ').');
-} else if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
-  console.warn('Email désactivé : SMTP_PORT doit être un numéro de port valide.');
-} else {
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: smtpPort,
-    secure: process.env.SMTP_SECURE.toLowerCase() === 'true' || process.env.SMTP_SECURE === '1',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD
-    }
-  });
+if (!emailEnabled) {
+  console.warn('Email désactivé : variables manquantes dans .env (' + missingSettings.join(', ') + ').');
 }
 
 async function sendEmail(to, subject, html) {
-  if (!transporter) return false;
+  if (!emailEnabled) return false;
 
   try {
     var actionLink = typeof html === 'string' ? html.match(/<a\b[^>]*\bhref=["']([^"']+)["']/i) : null;
@@ -42,15 +31,36 @@ async function sendEmail(to, subject, html) {
       ? 'SecuLens <' + configuredFrom + '>'
       : configuredFrom;
 
-    await transporter.sendMail({
-      from: from,
-      to: to,
-      subject: subject,
-      html: messageHtml
+    var response = await fetch(RESEND_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + process.env.RESEND_API_KEY.trim(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: from,
+        to: [to],
+        subject: subject,
+        html: messageHtml
+      }),
+      signal: AbortSignal.timeout(RESEND_TIMEOUT_MS)
     });
+
+    if (!response.ok) {
+      var details = '';
+      try {
+        var body = await response.json();
+        details = body && body.message ? ' : ' + body.message : '';
+      } catch (parseError) {
+        // Corps de réponse non JSON : on garde uniquement le statut HTTP.
+      }
+      console.error('Échec de l’envoi de l’email via Resend (HTTP ' + response.status + ')' + details);
+      return false;
+    }
+
     return true;
   } catch (error) {
-    console.error('Échec de l’envoi de l’email. Vérifiez la configuration SMTP.');
+    console.error('Échec de l’envoi de l’email via Resend : ' + (error && error.name === 'TimeoutError' ? 'délai dépassé' : error.message));
     return false;
   }
 }
