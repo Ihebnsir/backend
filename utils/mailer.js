@@ -32,6 +32,16 @@ if (missingSettings.length) {
       pass: process.env.SMTP_PASSWORD
     }
   });
+
+  // Test de connexion + authentification au démarrage (aucun email envoyé) : le résultat
+  // apparaît dans les logs Render et dit tout de suite si le port est bloqué (ETIMEDOUT)
+  // ou si les identifiants sont refusés (EAUTH).
+  transporter.verify().then(function() {
+    console.log('SMTP prêt : ' + process.env.SMTP_HOST + ':' + smtpPort + ' (' + (implicitTls ? 'SSL implicite' : 'STARTTLS') + ').');
+  }).catch(function(error) {
+    var smtpCode = error && error.responseCode ? ', réponse SMTP ' + error.responseCode : '';
+    console.error('SMTP injoignable au démarrage : ' + process.env.SMTP_HOST + ':' + smtpPort + ' (' + (error && error.code ? error.code : 'inconnu') + smtpCode + ').');
+  });
 }
 
 async function sendEmail(to, subject, html) {
@@ -52,12 +62,14 @@ async function sendEmail(to, subject, html) {
       ? 'SecuLens <' + configuredFrom + '>'
       : configuredFrom;
 
-    await transporter.sendMail({
+    var info = await transporter.sendMail({
       from: from,
       to: to,
       subject: subject,
       html: messageHtml
     });
+    // Trace de succès (sans l'adresse du destinataire) pour confirmer l'envoi dans les logs.
+    console.log('Email envoyé : « ' + subject + ' » (' + (info && info.messageId ? info.messageId : 'sans identifiant') + ').');
     return true;
   } catch (error) {
     // On ne logue que le code d'erreur et le code SMTP : jamais l'objet complet,
